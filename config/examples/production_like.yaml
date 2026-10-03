@@ -1,0 +1,143 @@
+# 本番規模の設定例（外側 5x5 fold、fold ごとに Optuna 500 trials）。
+# 実データは同梱していないので、dataset_path と selected_descriptors を手元のデータに合わせて使う。
+# config/active/ に置いたものが `python src/main.py` の対象になる。
+
+# 実験名（出力ディレクトリ名とファイル名に使う）
+exp_name: example
+
+# 入力データパス
+dataset_path: ${oc.env:DATA_ROOT}/data/processed/your_dataset.csv
+
+# 出力ディレクトリ
+output_dir:
+  base: ${oc.env:DATA_ROOT}/outputs/${exp_name}
+  results: ${output_dir.base}/results
+  np_p:
+    base: ${output_dir.base}/NP-Pyro
+    pkl: ${output_dir.np_p.base}/pkl
+    results: ${output_dir.np_p.base}/results
+    figures: ${output_dir.np_p.base}/figures
+  ap_hp:
+    base: ${output_dir.base}/AP-HP
+    pkl: ${output_dir.ap_hp.base}/pkl
+    results: ${output_dir.ap_hp.base}/results
+    figures: ${output_dir.ap_hp.base}/figures
+
+# 使用するモデル名（両モード共通）
+model:
+  name: random_forest
+  random_state: 227
+  n_jobs: -1
+
+# nested CV（外側）の設定。報告する指標はここから出る out-of-fold 予測で計算する（両モード共通）
+cv:
+  n_splits: 5
+  n_repeats: 5
+  random_state: 227
+
+# 使用する記述子（両モード共通）
+selected_descriptors:
+  - n_diff_abs
+  - t
+
+# 予測に関する設定（パイプライン全体）
+prediction:
+  # 候補抽出の NP-Pyro 確率しきい値。候補は proba_np_p の降順に並ぶので、
+  # 下げても順位は変わらず件数が増えるだけ。探索は見逃しを減らす側に倒す
+  threshold_np_p: 0.25
+
+# ===== モード別設定 =====
+# デフォルトとのマージはしない。np_p / ap_hp をそれぞれ完全な形で書く。
+# 部分マージだと、探索空間の dict が中途半端に上書きされて静かに壊れるため。
+modes:
+  # --- NP-Pyro: パイロクロアが生成しうるかの分類 ---
+  # 未報告の組成を確率で並べて上位を見るのが目的なので、ランキング指標（AP）を使う
+  np_p:
+    optuna:
+      n_trials: 500          # 外側 fold ごと
+      n_trials_final: 500    # 最終モデル用（全学習データ）
+      inner_cv:              # 目的関数内の CV
+        n_splits: 5
+        n_repeats: 1
+      # データが小さいので RF 内部で全コアを使うより CV 側を並列にするほうが速い。
+      # n_jobs_cv x n_jobs_model が実質のワーカー数になるので、コア数に合わせて決める。
+      n_jobs_cv: 5           # 目的関数内 CV を何 fold 同時に回すか（n_splits x n_repeats 以下）
+      n_jobs_model: 4        # RF 1 本あたりの並列数
+      random_state: 227
+      scoring: average_precision
+      param_space:
+        n_estimators: 100  # 固定
+        criterion:
+          type: categorical
+          choices: ["gini", "entropy"]
+        max_features: "sqrt"
+        max_depth:
+          type: int
+          low: 1
+          high: 50
+          log: true
+        min_samples_leaf:
+          type: int
+          low: 1
+          high: 30
+          log: true
+        min_samples_split:
+          type: int
+          low: 2
+          high: 40
+          log: true
+        max_leaf_nodes: null
+        bootstrap: true
+        class_weight:
+          type: categorical
+          choices: ["balanced", "balanced_subsample"]
+    prediction:
+      # 報告する指標・混同行列・pred_np_p 列の二値化しきい値。慣例どおり 0.5 のまま。
+      # 探索側で見逃しを減らす操作は、候補抽出の threshold_np_p (0.25) だけで行う。
+      # 他のしきい値での precision / recall は threshold_sweep.csv に出る
+      threshold: 0.5         # pred_np_p 列を作るときの確率しきい値
+    evaluation:
+      top_n_percentages: [0.05, 0.10, 0.15, 0.20]
+
+  # --- AP-HP: 高圧合成が必要な相の分類 ---
+  # 候補 1 件ごとに「高圧が要るか」を確率と閾値で判定するのが目的なので、
+  # 順位ではなく確率の値が信用できることが要件。proper scoring rule の
+  # Brier score を最小化する（Optuna は maximize なので neg_brier_score を最大化）。
+  # 学習行が少なく陽性も少数なので、探索空間は 2 次元に絞り、
+  # 内側 CV は 3 repeats で平均して 1 fold あたりのゆらぎを均す。
+  ap_hp:
+    optuna:
+      n_trials: 100
+      n_trials_final: 100
+      inner_cv:
+        n_splits: 5
+        n_repeats: 3
+      n_jobs_cv: 15          # 5x3 = 15 fit を同時に回す
+      n_jobs_model: 1
+      random_state: 227
+      scoring: neg_brier_score
+      param_space:
+        n_estimators: 300    # 木を増やして確率の刻みを細かくする（Brier に効く。データが小さいので安い）
+        criterion: gini
+        max_features: "sqrt"
+        max_depth: null      # 深さは min_samples_leaf で制御する
+        min_samples_leaf:
+          type: int
+          low: 1
+          high: 20
+          log: true
+        min_samples_split: 2 # min_samples_leaf と冗長なので固定
+        max_leaf_nodes: null
+        bootstrap: true
+        # balanced は葉の確率を陽性側に膨らませるので Brier には不利に働く。
+        # 重みなし（null）も選択肢に入れて Optuna に決めさせる
+        class_weight:
+          type: categorical
+          choices: [null, "balanced"]
+    prediction:
+      # AP-HP は Brier score でチューニングして「確率の値そのもの」を信用できるように
+      # している。そこから閾値を動かすと較正を捨てることになるので 0.5 のままにする。
+      # 他のしきい値でのトレードオフは threshold_sweep.csv 参照
+      threshold: 0.5         # pred_ap_hp 列を作るときの確率しきい値
+    evaluation:
+      top_n_percentages: []  # 外側テスト fold が小さいと上位数件の的中率になり意味を持たない

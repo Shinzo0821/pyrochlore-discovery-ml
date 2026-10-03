@@ -1,0 +1,20 @@
+name: pyrochlore-discovery-ml
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11
+  - numpy=1.26.4
+  - pandas=2.2.3
+  - scipy=1.14.1
+  - scikit-learn=1.6.0
+  - shap=0.48.0
+  - optuna=2.10.1
+  - numba
+  - matplotlib
+  - seaborn
+  - openpyxl
+  - pyyaml
+  - python-dotenv
+  - omegaconf
+  - tqdm

@@ -1,0 +1,20 @@
+# 環境変数
+.env
+.env.*
+!.env.example
+
+# データと出力（リポジトリには含めない）
+ml_data/
+outputs/
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# エディタ / OS
+.vscode/
+.DS_Store
+
+# Claude Code のローカル設定
+.claude/
